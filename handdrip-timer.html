@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>핸드드립 스탑워치</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    // 커피 테마 색상 (브라운 · 베이지 계열)
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: { 
+            cream: '#F8F3EA',
+            latte: '#E8D8C3',
+            sand: '#D4BC9C',
+            caramel: '#B07D52',
+            mocha: '#7A4E2D',
+            espresso: '#3E2516',
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="min-h-screen bg-cream text-espresso font-sans flex items-center justify-center p-4">
+
+  <main class="w-full max-w-md bg-latte/60 rounded-3xl shadow-xl border border-sand p-6 sm:p-8">
+    <!-- 헤더 -->
+    <header class="text-center mb-6">
+      <p class="text-sm tracking-widest text-caramel uppercase">Hand Drip Timer</p>
+      <h1 class="text-2xl font-bold text-mocha">핸드드립 스탑워치</h1>
+    </header>
+
+    <!-- 시간 표시 -->
+    <section class="bg-espresso text-cream rounded-2xl py-6 text-center shadow-inner">
+      <div id="time" class="font-mono text-5xl sm:text-6xl font-bold tracking-tight">00:00.00</div>
+    </section>
+
+    <!-- 안내 메시지 -->
+    <section id="guide" class="mt-6 rounded-2xl bg-cream border border-sand p-5 text-center min-h-[124px] flex flex-col justify-center">
+      <p id="guide-title" class="text-2xl font-bold text-mocha">시작 버튼을 누르세요</p>
+      <p id="guide-desc" class="mt-2 text-sm text-espresso/70">첫 물: 40g</p>
+    </section>
+
+    <!-- 전체 진행 바 -->
+    <section class="mt-6">
+      <div class="relative h-3 w-full rounded-full bg-sand overflow-hidden">
+        <div id="progress" class="absolute inset-y-0 left-0 bg-caramel rounded-full transition-[width] duration-200 ease-linear" style="width: 0%"></div>
+      </div>
+      <!-- 단계 표시 (너비는 각 단계의 시간에 비례) -->
+      <ol id="steps" class="mt-3 flex text-xs text-espresso/60"></ol>
+    </section>
+
+    <!-- 버튼 -->
+    <section class="mt-8 grid grid-cols-2 gap-3">
+      <button id="toggle" type="button"
+        class="rounded-xl bg-mocha text-cream font-semibold py-3 shadow hover:bg-espresso active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed">
+        시작
+      </button>
+      <button id="reset" type="button"
+        class="rounded-xl bg-sand text-espresso font-semibold py-3 shadow hover:bg-caramel hover:text-cream active:scale-95 transition">
+        초기화
+      </button>
+    </section>
+  </main>
+
+  <script>
+    // ===== 설정 =====
+    // 단계별 종료 시점(초)과 안내 문구. 시간을 바꾸려면 이 배열만 수정하면 됩니다.
+    // 주의: 마지막 단계의 end 값이 전체 시간(TOTAL)이 됩니다.
+    const STEPS = [
+      { end: 60,  label: '40g', title: '40g 물을 부어주세요', desc: '뜸들이는 중 (1분)' },
+      { end: 100, label: '80g', title: '80g 물을 부어주세요', desc: '1차 추출 (40초)' },
+      { end: 160, label: '80g', title: '80g 물을 부어주세요', desc: '마지막 추출 (1분)' },
+    ];
+    const TOTAL = STEPS[STEPS.length - 1].end; // 전체 시간(초)
+
+    // ===== DOM 참조 =====
+    const timeEl = document.getElementById('time');
+    const titleEl = document.getElementById('guide-title');
+    const descEl = document.getElementById('guide-desc');
+    const progressEl = document.getElementById('progress');
+    const stepsEl = document.getElementById('steps');
+    const toggleBtn = document.getElementById('toggle');
+    const resetBtn = document.getElementById('reset');
+
+    // ===== 상태 =====
+    // 'idle' | 'running' | 'paused' | 'done'
+    // 결정: 경과 시간은 rAF 타임스탬프 차이로 계산해 탭 전환이나 렌더링 지연에 영향을 받지 않도록 함
+    let state = 'idle';
+    let elapsedMs = 0;      // 일시정지까지 누적된 시간
+    let startedAt = 0;      // 현재 구간의 시작 시각 (performance.now 기준)
+    let rafId = null;
+
+    // 현재 경과 시간(ms)
+    function getElapsed() {
+      return state === 'running'
+        ? elapsedMs + (performance.now() - startedAt)
+        : elapsedMs;
+    }
+
+    // 00:00.00 형식으로 변환
+    function formatTime(ms) {
+      const pad = (n) => String(n).padStart(2, '0');
+      const m = Math.floor(ms / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      const cs = Math.floor((ms % 1000) / 10);
+      return `${pad(m)}:${pad(s)}.${pad(cs)}`;
+    }
+
+    // 단계 표시 줄 만들기 (시간 비율로 너비 지정)
+    function buildSteps() {
+      stepsEl.innerHTML = '';
+      let prevEnd = 0;
+      STEPS.forEach((step, i) => {
+        const duration = step.end - prevEnd;
+        const li = document.createElement('li');
+        li.id = `step-${i}`;
+        li.style.flexGrow = duration;
+        li.className = 'transition-colors';
+        li.textContent = `${step.label} · ${formatTime(prevEnd * 1000).slice(0, 5)}`;
+        stepsEl.appendChild(li);
+        prevEnd = step.end;
+      });
+      // 완료 지점 표시 (고정 너비)
+      const done = document.createElement('li');
+      done.id = 'step-done';
+      done.className = 'w-0 whitespace-nowrap';
+      stepsEl.appendChild(done);
+    }
+
+    // 현재 경과 시간에 맞는 단계 인덱스 (-1 이면 모든 단계 종료)
+    function currentStepIndex(sec) {
+      return STEPS.findIndex((step) => sec < step.end);
+    }
+
+    // 화면 갱신
+    function render() {
+      const ms = getElapsed();
+      const sec = ms / 1000;
+      timeEl.textContent = formatTime(ms);
+      progressEl.style.width = `${Math.min(sec / TOTAL, 1) * 100}%`;
+
+      // 안내 문구 결정
+      if (state === 'idle') {
+        titleEl.textContent = '시작 버튼을 누르세요';
+        descEl.textContent = '첫 물: 40g';
+      } else if (state === 'done') {
+        titleEl.textContent = '커피를 맛있게 드세요 ☕';
+        descEl.textContent = '추출이 모두 끝났습니다';
+      } else {
+        const idx = currentStepIndex(sec);
+        const step = STEPS[idx];
+        const remain = Math.ceil(step.end - sec);
+        titleEl.textContent = step.title;
+        descEl.textContent = `${step.desc} · 남은 시간 ${remain}초`;
+      }
+
+      // 현재 단계 강조
+      const activeIdx = state === 'done' ? -1 : currentStepIndex(sec);
+      STEPS.forEach((_, i) => {
+        const li = document.getElementById(`step-${i}`);
+        const isActive = i === activeIdx;
+        li.className = `transition-colors ${isActive ? 'font-bold text-mocha' : ''}`;
+      });
+    }
+
+    // 버튼 라벨/활성 상태 갱신
+    function updateButtons() {
+      const labels = { idle: '시작', running: '일시정지', paused: '재개', done: '시작' };
+      toggleBtn.textContent = labels[state];
+      toggleBtn.disabled = state === 'done';
+    }
+
+    // 매 프레임 실행되는 루프
+    function tick() {
+      const ms = getElapsed();
+      if (ms >= TOTAL * 1000) {
+        // 종료 처리: 시간을 정확히 전체 길이로 고정하고 루프 중단
+        elapsedMs = TOTAL * 1000;
+        state = 'done';
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        render();
+        updateButtons();
+        return;
+      }
+      render();
+      rafId = requestAnimationFrame(tick);
+    }
+
+    // 시작 / 일시정지 / 재개 토글
+    toggleBtn.addEventListener('click', () => {
+      if (state === 'idle' || state === 'paused') {
+        startedAt = performance.now();
+        state = 'running';
+        rafId = requestAnimationFrame(tick);
+      } else if (state === 'running') {
+        elapsedMs = getElapsed();
+        state = 'paused';
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      render();
+      updateButtons();
+    });
+
+    // 초기화
+    resetBtn.addEventListener('click', () => {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      elapsedMs = 0;
+      state = 'idle';
+      render();
+      updateButtons();
+    });
+
+    // 초기 세팅
+    buildSteps();
+    render();
+    updateButtons();
+  </script>
+</body>
+</html>
